@@ -1,126 +1,97 @@
-# 如何制作一个定制的 PHP 基础 Docker 镜像
+# 如何开发一个 PHP + MySQL 的 Docker 化应用
 
-> 目标：准备一个定制的 PHP 基础镜像。基础镜像，通常为含最小功能的系统镜像，之后的应用镜像都以此为基础。
+> 目标：基于典型的 LAMP 技术栈，用 Docker 镜像的方式搭建一个 Linux + Apache + MySQL + PHP 的应用 。
 
-> 本项目代码维护在 **[DaoCloud/php-apache-image](https://github.com/DaoCloud/php-apache-image)** 项目中。
+>本项目代码维护在 **[DaoCloud/php-apache-mysql-sample](https://github.com/DaoCloud/php-apache-mysql-sample)** 项目中。
 
-### 制作基础镜像
+### 创建 PHP 应用容器
 
-选择 Ubuntu 官方的 14.04 版本为我们依赖的系统镜像。
+> 因所有官方镜像均位于境外服务器，为了确保所有示例能正常运行，DaoCloud 提供了一套境内镜像源，并与官方源保持同步。
 
-```dockerfile
-FROM ubuntu:trusty
-```
-
-> 因所有官方镜像均位于境外服务器，为了确保所有示例能正常运行，DaoCloud 提供了一套境内镜像源，并与官方源保持同步。如果使用 DaoCloud 的镜像源，则指向：`FROM daocloud.io/ubuntu:trusty`
-
-设置镜像的维护者，相当于镜像的作者或发行方。
+首先，选择官方的 PHP 镜像作为项目的基础镜像。
 
 ```dockerfile
-MAINTAINER Captain Dao <support@daocloud.io>
+FROM daocloud.io/php:5.6-apache
 ```
 
-用 RUN 命令调用 apt-get 包管理器安装 PHP 环境所依赖的程序包。
-
-> 安装依赖包相对比较固定，因此该动作应该尽量提前，这样做有助于提高镜像层的复用率。
+接着，用官方 PHP 镜像内置命令`docker-php-ext-install`安装 PHP 的 MySQL 扩展依赖。
 
 ```dockerfile
-RUN apt-get update \
-    && apt-get -y install \
-        curl \
-        wget \
-        apache2 \
-        libapache2-mod-php5 \
-        php5-mysql \
-        php5-sqlite \
-        php5-gd \
-        php5-curl \
-        php-pear \
-        php-apc \
+RUN docker-php-ext-install pdo_mysql
 ```
 
-用 RUN 命令调用 Linux 命令对 Apache 服务和 PHP 参数进行配置。
+* 依赖包通过 `docker-php-ext-install` 安装，如果依赖包需要配置参数则通过 `docker-php-ext-configure` 命令。
+* 安装 `pdo_mysql` PHP 扩展。
+
+然后，将代码复制到目标目录。
 
 ```dockerfile
-RUN echo "ServerName localhost" >> /etc/apache2/apache2.conf \
+COPY . /var/www/html/
 ```
 
-用 RUN 命令调用 mkdir 来准备一个干净的放置代码的目录。
+因为基础镜像内已经声明了暴露端口和启动命令，此处可以省略。
 
-```dockerfile
-RUN mkdir -p /app && rm -rf /var/www/html && ln -s /app /var/www/html
+至此，包含 PHP 应用的 Docker 容器已经准备好了。PHP 代码中访问数据库所需的参数，是通过读取环境变量的方式声明的。
+
+```php
+$serverName =   env("MYSQL_PORT_3306_TCP_ADDR", "localhost");
+$databaseName = env("MYSQL_INSTANCE_NAME", "homestead");
+$username =     env("MYSQL_USERNAME", "homestead");
+$password =     env("MYSQL_PASSWORD", "secret");
+
+/**
+ * 获取环境变量
+ * @param $key
+ * @param null $default
+ * @return null|string
+ */
+function env($key, $default = null)
+{
+    $value = getenv($key);
+    if ($value === false) {
+        return $default;
+    }
+    return $value;
+}
 ```
 
-将本地的代码添加到目录，并指定其为当前的工作目录。
+这样做是因为在 Docker 化应用开发的最佳实践中，通常将有状态的数据类服务放在另一个容器内运行，并通过容器特有的 `link` 机制将应用容器与数据容器动态的连接在一起。
 
-```dockerfile
-COPY . /app
-WORKDIR /app
+### 绑定 MySQL 数据容器（本地）
+
+首先，需要创建一个 MySQL 容器。
+
+```bash
+docker run --name some-mysql -e MYSQL_ROOT_PASSWORD=my-secret-pw -d daocloud.io/mysql:5.5
 ```
 
-设置启动脚本的权限，指定暴露的容器内端口地址。
+之后，通过 Docker 容器间的 `link` 机制，便可将 MySQL 的默认端口（3306）暴露给应用容器。
 
-最后指定容器启动的进程。
-
-```dockerfile
-RUN chmod 755 ./start.sh
-EXPOSE 80
-CMD ["./start.sh"]
+```bash
+docker run --name some-app --link some-mysql:mysql -d app-that-uses-mysql
 ```
 
-至此一个 PHP 的基础镜像制作完毕，你可以在本地运行 `docker build -t my-php-base .` 来构建出这个镜像并命名为 `my-php-base`。
+### 绑定 MySQL 数据服务（云端）
 
-> 由于网络环境的特殊情况，在本地运行 `docker build` 的时间会很长，并且有可能失败。推荐使用 **[DaoCloud 加速器](http://help.daocloud.io/intro/accelerator.html)** 和 DaoCloud 的云端 **[代码构建](http://help.daocloud.io/features/build-flows.html)** 功能。
+比起本地创建，在云端创建和绑定 MySQL 数据服务会更简单。
 
-### 完整 Dockerfile
+1. 在 GitHub 上 Fork **[DaoCloud/php-apache-mysql-sample](https://github.com/DaoCloud/php-apache-mysql-sample)** 或者添加自己的代码仓库。
+2. 注册成为 DaoCloud 用户。
+3. 在 DaoCloud 「控制台」中选择「代码构建」。
+4. 创建新项目，选择代码源，开始构建镜像。
+5. 在「服务集成」创建 MySQL 服务实例。
+6. 将构建的应用镜像关联 MySQL 服务实例并部署在云端。
 
-```dockerfile
-# Ubuntu 14.04，Trusty Tahr（可靠的塔尔羊）发行版
-FROM ubuntu:trusty
+DaoCloud 使用图文介绍
 
-# 道客船长荣誉出品
-MAINTAINER Captain Dao <support@daocloud.io>
+* 了解如何用 DaoCloud 进行代码构建：参考[代码构建](http://help.daocloud.io/features/build-flows.html)。
+* 了解如何用 DaoCloud 进行持续集成：参考[持续集成](http://help.daocloud.io/features/continuous-integration/index.html)。
+* 了解如何用为应用准备一个数据库服务：参考[服务集成](http://help.daocloud.io/features/services.html)。
+* 了解如何部署一个刚刚构建好的应用镜像：参考[应用部署](http://help.daocloud.io/features/packages.html)。
 
-# APT 自动安装 PHP 相关的依赖包，如需其他依赖包在此添加
-RUN apt-get update \
-    && apt-get -y install \
-        curl \
-        wget \
-        apache2 \
-        libapache2-mod-php5 \
-        php5-mysql \
-        php5-sqlite \
-        php5-gd \
-        php5-curl \
-        php-pear \
-        php-apc \
+[DaoCloud 使用视频介绍](http://7u2psl.com2.z0.glb.qiniucdn.com/daocloud_small.mp4)
 
-    # 用完包管理器后安排打扫卫生可以显著的减少镜像大小
-    && apt-get clean \
-    && apt-get autoclean \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
 
-    # 安装 Composer，此物是 PHP 用来管理依赖关系的工具
-    # Laravel Symfony 等时髦的框架会依赖它
-    && curl -sS https://getcomposer.org/installer \
-        | php -- --install-dir=/usr/local/bin --filename=composer
+### php-apache-mysql-sample 应用截图
 
-# Apache 2 配置文件：/etc/apache2/apache2.conf
-# 给 Apache 2 设置一个默认服务名，避免启动时给个提示让人紧张.
-RUN echo "ServerName localhost" >> /etc/apache2/apache2.conf \
-
-    # PHP 配置文件：/etc/php5/apache2/php.ini
-    # 调整 PHP 处理 Request 里变量提交值的顺序，解析顺序从左到右，后解析新值覆盖旧值
-    # 默认设定为 EGPCS（ENV/GET/POST/COOKIE/SERVER）
-    && sed -i 's/variables_order.*/variables_order = "EGPCS"/g' \
-        /etc/php5/apache2/php.ini
-
-# 配置默认放置 App 的目录
-RUN mkdir -p /app && rm -rf /var/www/html && ln -s /app /var/www/html
-COPY . /app
-WORKDIR /app
-RUN chmod 755 ./start.sh
-
-EXPOSE 80
-CMD ["./start.sh"]
-```
+![php-apache-mysql-sample](/php-apache-mysql.png "php-apache-mysql")
